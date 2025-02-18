@@ -216,21 +216,31 @@
 
     const grid_fragment_source = `#version 300 es
         precision mediump float;
+        uniform ivec3 u_grid_resolution;
+
         flat in float quadrant_id;
         in vec2 tex_coords;
         out vec4 fragColor;
 
+        int get_quadrant_id(){
+            int ix = int(gl_FragCoord.x) / u_grid_resolution.z > u_grid_resolution.x/2 ? 1 : 0;
+            int iy = int(gl_FragCoord.y) / u_grid_resolution.z > u_grid_resolution.y/2 ? 1 : 0;
+            return 2*iy + ix;
+        }
+
         void main(){
-            if(quadrant_id == 0.0){
+            int this_quadrant_id = get_quadrant_id();
+
+            if(this_quadrant_id == 0){
                 fragColor = vec4(1.0, 1.0, 0.0, 1.0);
             }
-            else if (quadrant_id == 1.0){
+            else if (this_quadrant_id == 1){
                 fragColor = vec4(0.0, 1.0, 0.0, 1.0);
             }
-            else if (quadrant_id == 2.0){
+            else if (this_quadrant_id == 2){
                 fragColor = vec4(0.0, 0.0, 1.0, 1.0);
             }
-            else if (quadrant_id == 3.0){
+            else if (this_quadrant_id == 3){
                 fragColor = vec4(0.0, 1.0, 1.0, 1.0);
             }
         }
@@ -240,6 +250,9 @@
     gl.useProgram(grid_program);
     const grid_position_attribute_location = gl.getAttribLocation(grid_program, "a_pos");
     const grid_tex_coords_attribute_location = gl.getAttribLocation(grid_program, "a_tex_coords");
+    const grid_resolution_location = gl.getUniformLocation(grid_program, "u_grid_resolution");
+
+    gl.uniform3iv(grid_resolution_location, [gol_width, gol_height, pixels_per_square]);
 
     const grid_vao = gl.createVertexArray();
     gl.bindVertexArray(grid_vao);

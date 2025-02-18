@@ -44,7 +44,7 @@
         const program = create_program(gl, vertex_shader, fragment_shader);
         return program;
     }
-    
+
     const gl = get_webgl_context("#gameOfLifeCanvas", "webgl2");
     const canvas = document.querySelector("#gameOfLifeCanvas");
     gl.viewport(0, 0, canvas.width, canvas.height);
@@ -61,12 +61,16 @@
     console.log(`gol_width: ${gol_width} gol_height: ${gol_height}`);
 
     const num_cells = gol_width * gol_height;
-    const gol_half_width = Math.floor(gol_width / 2.0);
-    const gol_half_height = Math.floor(gol_height / 2.0);
+    const x_sections = 4;
+    const y_sections = 2;
     const dx = 2.0 / gol_width; // gl screen space
     const dy = 2.0 / gol_height;
-    const tex_dx = 1.0 / gol_half_width;
-    const tex_dy = 1.0 / gol_half_height;
+    const x_cells_per_section = gol_width / x_sections;
+    const y_cells_per_section = gol_height / y_sections;
+    const tex_dx = 1.0 / x_cells_per_section;
+    const tex_dy = 1.0 / y_cells_per_section;
+    console.log(`x_cells_per_section: ${x_cells_per_section} y_cells_per_section: ${y_cells_per_section}`);
+    let gol_board = new Array(num_cells).fill(0);
 
     /////////////////////////////////
     // Draw gridlines
@@ -149,12 +153,12 @@
     let grid_vertices = [];
     for(let y_ind = 0; y_ind < gol_height; y_ind++){
         const screen_y = -1.0 + y_ind * dy;
-        const quadrant_y_ind = screen_y >= 0.0 ? 1 : 0;
+        const quadrant_y_ind = Math.floor(y_ind / y_cells_per_section)
         const tex_y = quadrant_y_ind * tex_dy;
 
         for(let x_ind = 0; x_ind < gol_width; x_ind++){
             const screen_x = -1.0 + x_ind * dx;
-            const quadrant_x_ind = screen_x >= 0.0 ? 1 : 0;
+            const quadrant_x_ind = Math.floor(x_ind / x_cells_per_section)
             const tex_x = quadrant_x_ind * tex_dx;
             const quadrant_ind = 2.0 * quadrant_y_ind + quadrant_x_ind;
             //console.log(`${screen_x} ${quadrant_ind} ${screen_x} `);
@@ -217,32 +221,54 @@
     const grid_fragment_source = `#version 300 es
         precision mediump float;
         uniform ivec3 u_grid_resolution;
+        uniform ivec2 u_sections;
 
         flat in float quadrant_id;
         in vec2 tex_coords;
         out vec4 fragColor;
 
         int get_quadrant_id(){
-            int ix = int(gl_FragCoord.x) / u_grid_resolution.z > u_grid_resolution.x/2 ? 1 : 0;
-            int iy = int(gl_FragCoord.y) / u_grid_resolution.z > u_grid_resolution.y/2 ? 1 : 0;
-            return 2*iy + ix;
+            ivec2 cell_pos = ivec2(gl_FragCoord.xy) / u_grid_resolution.z;
+            ivec2 cells_per_section = u_grid_resolution.xy / u_sections;
+            ivec2 inds = cell_pos / cells_per_section;
+            return inds.y * u_sections.x + inds.x;
         }
 
         void main(){
             int this_quadrant_id = get_quadrant_id();
 
+            vec4 dye_color = vec4(1.0);
+            vec4 alive_color = vec4(1.0);
+            vec4 dead_color = vec4(vec3(0.0), 1.0);
             if(this_quadrant_id == 0){
-                fragColor = vec4(1.0, 1.0, 0.0, 1.0);
+                dye_color = vec4(1.0, 1.0, 0.0, 1.0);
             }
             else if (this_quadrant_id == 1){
-                fragColor = vec4(0.0, 1.0, 0.0, 1.0);
+                dye_color = vec4(0.0, 1.0, 0.0, 1.0);
             }
             else if (this_quadrant_id == 2){
-                fragColor = vec4(0.0, 0.0, 1.0, 1.0);
+                dye_color = vec4(0.0, 0.0, 1.0, 1.0);
             }
             else if (this_quadrant_id == 3){
-                fragColor = vec4(0.0, 1.0, 1.0, 1.0);
+                dye_color = vec4(0.0, 1.0, 1.0, 1.0);
             }
+            else if (this_quadrant_id == 4){
+                dye_color = vec4(0.5, 0.5, 0.5, 1.0);
+            }
+            else if (this_quadrant_id == 5){
+                dye_color = vec4(0.5, 1.0, 0.5, 1.0);
+            }
+            else if (this_quadrant_id == 6){
+                dye_color = vec4(0.0, 0.5, 0.5, 1.0);
+            }
+            else if (this_quadrant_id == 7){
+                dye_color = vec4(0.5, 0.5, 1.0, 1.0);
+            }
+            else{
+                dye_color = vec4(0.0, 0.0, 0.0, 1.0)/ 0.2;
+            }
+            
+            fragColor = 0.25 * dye_color;
         }
     `
 
@@ -251,8 +277,10 @@
     const grid_position_attribute_location = gl.getAttribLocation(grid_program, "a_pos");
     const grid_tex_coords_attribute_location = gl.getAttribLocation(grid_program, "a_tex_coords");
     const grid_resolution_location = gl.getUniformLocation(grid_program, "u_grid_resolution");
+    const grid_sections_location = gl.getUniformLocation(grid_program, "u_sections");
 
     gl.uniform3iv(grid_resolution_location, [gol_width, gol_height, pixels_per_square]);
+    gl.uniform2iv(grid_sections_location, [x_sections, y_sections]);
 
     const grid_vao = gl.createVertexArray();
     gl.bindVertexArray(grid_vao);

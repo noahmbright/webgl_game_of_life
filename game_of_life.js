@@ -45,32 +45,110 @@
         return program;
     }
 
+    function create_texture(gl){
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+        return texture;
+    }
+    
     const gl = get_webgl_context("#gameOfLifeCanvas", "webgl2");
     const canvas = document.querySelector("#gameOfLifeCanvas");
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clearColor(1.0, 0.0, 0.0, 1.0);
     console.log(`Max texture size ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`);
+    console.log(`Max vertices per call ${gl.getParameter(gl.MAX_ELEMENTS_VERTICES)}`);
     const bytes_per_float = Float32Array.BYTES_PER_ELEMENT;
 
     /////////////////////////////////
     // Game of Life game state
     /////////////////////////////////
-    const pixels_per_square = 16;
+    const pixels_per_square = 2;
     const gol_width = Math.floor(canvas.width / pixels_per_square);
     const gol_height = Math.floor(canvas.height / pixels_per_square);
-    console.log(`gol_width: ${gol_width} gol_height: ${gol_height}`);
-
     const num_cells = gol_width * gol_height;
-    const x_sections = 4;
-    const y_sections = 2;
+    console.log(`gol_width: ${gol_width} gol_height: ${gol_height} num_cells: ${num_cells}`);
+
+    const x_sections = 8;
+    const y_sections = 4;
     const dx = 2.0 / gol_width; // gl screen space
     const dy = 2.0 / gol_height;
     const x_cells_per_section = gol_width / x_sections;
     const y_cells_per_section = gol_height / y_sections;
+    const texture_width = x_cells_per_section;
+    const texture_height = y_cells_per_section;
     const tex_dx = 1.0 / x_cells_per_section;
     const tex_dy = 1.0 / y_cells_per_section;
     console.log(`x_cells_per_section: ${x_cells_per_section} y_cells_per_section: ${y_cells_per_section}`);
-    let gol_board = new Array(num_cells).fill(0);
+    console.log(`texture_width: ${texture_width} texture_height: ${texture_height} texture bits: ${texture_width * texture_height * 32}`);
+
+    /////////////////////////////////
+    // Textures and framebuffers
+    /////////////////////////////////
+
+    // textures are RGBA8, so layout on GPU is
+    // RRRRRRRR GGGGGGGG BBBBBBBB AAAAAAAA
+    // index the y sections by channel, RGBA
+    // index the x sections by bit
+    // e.g. y = 2, x = 4 bit would be accessed by tex.b && (1 << 4)
+    // y in [0, 3], x in [0, 7]
+    // texture coordinates choose which 32 bit RGBA value to sample
+    const texture = create_texture(gl);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    const internal_format = gl.RGBA8;
+    const format = gl.RGBA;
+    const type = gl.UNSIGNED_BYTE;
+
+    // the very first 32 bits in the array/texture correspond to
+    // the bottom left corners of each section, the next 32 
+    // correspond to the bottom row second column, so on and so forth
+    let gol_board = new Uint32Array(num_cells/32).fill(0);
+
+    // x, y are the coordinates of the cell on the board, independent of sectioning
+    function set_cell(x, y){
+        // in JS array version of board, need to pack bits
+        let offset = 0;
+        const x_section = Math.floor(x/x_sections);
+        const y_section = Math.floor(y/y_sections);
+        const x_offset = x % x_sections;
+        const y_offset = y % y_sections;
+        offset += y_section * 8;
+        offset += x_section;
+        x_cells_per_section;
+
+        gol_board[y_offset * x_cells_per_section + x_offset] ^= (1 << offset);
+    }
+
+    const threshold = 0.5;
+    function randomize_board(){
+        for(let i = 0; i < num_cells/32; i++){
+            for(let j = 0; j < 32; j++){
+                const x = Math.random();
+                if (x < threshold){
+                    gol_board[i] |= 1 << j;
+                }
+                else{
+                    gol_board[i] &= (~(1 << j));
+                }
+            }
+        }
+    }
+
+    function buffer_board_to_texture(){
+        gl.texImage2D(gl.TEXTURE_2D, 0, internal_format,
+                x_cells_per_section, y_cells_per_section, 0,
+                format, type, new Uint8Array(gol_board.buffer)
+        );
+    }
+
+    randomize_board();
+    console.log(gol_board);
+    buffer_board_to_texture();
 
     /////////////////////////////////
     // Draw gridlines
@@ -154,46 +232,43 @@
     for(let y_ind = 0; y_ind < gol_height; y_ind++){
         const screen_y = -1.0 + y_ind * dy;
         const quadrant_y_ind = Math.floor(y_ind / y_cells_per_section)
-        const tex_y = quadrant_y_ind * tex_dy;
+        const quadrant_y_offset = y_ind % y_cells_per_section;
+        const tex_y = quadrant_y_offset * tex_dy;
 
         for(let x_ind = 0; x_ind < gol_width; x_ind++){
             const screen_x = -1.0 + x_ind * dx;
             const quadrant_x_ind = Math.floor(x_ind / x_cells_per_section)
-            const tex_x = quadrant_x_ind * tex_dx;
-            const quadrant_ind = 2.0 * quadrant_y_ind + quadrant_x_ind;
-            //console.log(`${screen_x} ${quadrant_ind} ${screen_x} `);
+            const quadrant_x_offset = x_ind % x_cells_per_section;
+            const tex_x = quadrant_x_offset * tex_dx;
 
             // bottom left
             // positions
             grid_vertices.push(screen_x);
             grid_vertices.push(screen_y);
-            grid_vertices.push(quadrant_ind);
-            // texture
             grid_vertices.push(tex_x);
             grid_vertices.push(tex_y);
 
             // top left
             grid_vertices.push(screen_x);
             grid_vertices.push(screen_y + dy);
-            grid_vertices.push(quadrant_ind);
             grid_vertices.push(tex_x);
             grid_vertices.push(tex_y + tex_dy);
 
             // top right
             grid_vertices.push(screen_x + dx);
             grid_vertices.push(screen_y + dy);
-            grid_vertices.push(quadrant_ind);
             grid_vertices.push(tex_x + tex_dx);
             grid_vertices.push(tex_y + tex_dy);
 
             // bottom right
             grid_vertices.push(screen_x + dx);
             grid_vertices.push(screen_y);
-            grid_vertices.push(quadrant_ind);
             grid_vertices.push(tex_x + tex_dx);
             grid_vertices.push(tex_y);
         }
     }
+
+    console.log(grid_vertices);
 
     let grid_indices = [];
     for(let i = 0; i < num_cells; i++){
@@ -209,12 +284,10 @@
         in vec3 a_pos;
         in vec2 a_tex_coords;
         out vec2 tex_coords;
-        flat out float quadrant_id;
 
         void main(){
             gl_Position = vec4(a_pos.x, a_pos.y, 0.0, 1.0);
             tex_coords = a_tex_coords;
-            quadrant_id = a_pos.z;
         }
     `
 
@@ -223,52 +296,49 @@
         uniform ivec3 u_grid_resolution;
         uniform ivec2 u_sections;
 
-        flat in float quadrant_id;
         in vec2 tex_coords;
         out vec4 fragColor;
 
-        int get_quadrant_id(){
+        uniform sampler2D u_board;
+
+        int extract_bit(ivec2 idxs){
+            vec4 board_sample = texture(u_board, tex_coords);
+            int red_bits = int(board_sample.r * 255.0);
+            int green_bits = int(board_sample.g * 255.0);
+            int blue_bits = int(board_sample.b * 255.0);
+            int alpha_bits = int(board_sample.a * 255.0);
+
+            int bits;
+            if(idxs.y == 0) bits = red_bits;
+            else if(idxs.y == 0) bits = green_bits;
+            else if(idxs.y == 0) bits = blue_bits;
+            else bits = alpha_bits;
+
+            return (bits >> idxs.x) & 1;
+        }
+
+        ivec2 get_quadrant_coord(){
             ivec2 cell_pos = ivec2(gl_FragCoord.xy) / u_grid_resolution.z;
             ivec2 cells_per_section = u_grid_resolution.xy / u_sections;
-            ivec2 inds = cell_pos / cells_per_section;
-            return inds.y * u_sections.x + inds.x;
+            return cell_pos / cells_per_section;
         }
 
         void main(){
-            int this_quadrant_id = get_quadrant_id();
+            ivec2 quadrant_coord = get_quadrant_coord();
+            int this_quadrant_id = quadrant_coord.y * u_sections.x + quadrant_coord.x;
 
-            vec4 dye_color = vec4(1.0);
             vec4 alive_color = vec4(1.0);
             vec4 dead_color = vec4(vec3(0.0), 1.0);
-            if(this_quadrant_id == 0){
-                dye_color = vec4(1.0, 1.0, 0.0, 1.0);
-            }
-            else if (this_quadrant_id == 1){
-                dye_color = vec4(0.0, 1.0, 0.0, 1.0);
-            }
-            else if (this_quadrant_id == 2){
-                dye_color = vec4(0.0, 0.0, 1.0, 1.0);
-            }
-            else if (this_quadrant_id == 3){
-                dye_color = vec4(0.0, 1.0, 1.0, 1.0);
-            }
-            else if (this_quadrant_id == 4){
-                dye_color = vec4(0.5, 0.5, 0.5, 1.0);
-            }
-            else if (this_quadrant_id == 5){
-                dye_color = vec4(0.5, 1.0, 0.5, 1.0);
-            }
-            else if (this_quadrant_id == 6){
-                dye_color = vec4(0.0, 0.5, 0.5, 1.0);
-            }
-            else if (this_quadrant_id == 7){
-                dye_color = vec4(0.5, 0.5, 1.0, 1.0);
-            }
-            else{
-                dye_color = vec4(0.0, 0.0, 0.0, 1.0)/ 0.2;
-            }
+
+            vec4 dye_color = ((quadrant_coord.x + quadrant_coord.y) & 1) == 1
+                            ? vec4(1.0, 1.0, 0.0, 1.0)
+                            : vec4(0.0, 1.0, 1.0, 1.0);
+
+            vec4 cell_color = extract_bit(quadrant_coord) == 1
+                              ? alive_color
+                              : dead_color;
             
-            fragColor = 0.25 * dye_color;
+            fragColor = cell_color + dye_color * 0.25;
         }
     `
 
@@ -291,32 +361,33 @@
 
     const grid_ebo = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, grid_ebo);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(grid_indices), gl.STATIC_DRAW);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(grid_indices), gl.STATIC_DRAW);
 
     gl.enableVertexAttribArray(grid_position_attribute_location);
     gl.vertexAttribPointer(grid_position_attribute_location,
-        3, gl.FLOAT, false, 5 * bytes_per_float, 0
+        2, gl.FLOAT, false, 4 * bytes_per_float, 0
     );
 
     gl.enableVertexAttribArray(grid_tex_coords_attribute_location);
     gl.vertexAttribPointer(grid_tex_coords_attribute_location,
-        2, gl.FLOAT, false, 5 * bytes_per_float, 3 * bytes_per_float
+        2, gl.FLOAT, false, 4 * bytes_per_float, 2 * bytes_per_float
     );
 
     function draw_grid(){
         gl.useProgram(grid_program);
         gl.bindVertexArray(grid_vao);
-        gl.drawElements(gl.TRIANGLES, 6 * num_cells, gl.UNSIGNED_SHORT, 0)
+        gl.drawElements(gl.TRIANGLES, 6 * num_cells, gl.UNSIGNED_INT, 0);
     }
 
     /////////////////////////////////
     // Main render loop
     /////////////////////////////////
 
+    gl.disable(gl.DEPTH_TEST);
     function render(){
         gl.clear(gl.COLOR_BUFFER_BIT);
         draw_grid();
-        draw_lines();
+        //draw_lines();
 
         requestAnimationFrame(render);
     }

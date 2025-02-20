@@ -49,8 +49,8 @@
         const texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
         
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
@@ -94,6 +94,19 @@
     // the bit to modify depends on the section
     let gol_board = new Uint32Array(num_cells/32).fill(0);
     console.log(`gol_board length: ${gol_board.length} gol_board bits: ${gol_board.length * 32}`)
+
+    const gol_kernel = new Int32Array([
+        1, 1, 1,
+        1, 9, 1,
+        1, 1, 1
+    ]);
+
+    const normal_kernel = [
+        0, 0, 0,
+        0, 100, 0,
+        0, 0, 0
+    ];
+
 
     /////////////////////////////////
     // Textures and framebuffers
@@ -160,9 +173,8 @@
         set_cell(x+1,y);
     }
 
-    console.log(gol_board);
     //randomize_board();
-    horizontal_triplet(3, 10);
+    horizontal_triplet(8, 3);
     buffer_board_to_texture();
 
     /////////////////////////////////
@@ -310,14 +322,31 @@
         precision mediump float;
         uniform ivec3 u_grid_resolution;
         uniform ivec2 u_sections;
+        uniform int u_kernel[9];
 
         in vec2 tex_coords;
         out vec4 fragColor;
 
         uniform sampler2D u_board;
 
-        int extract_bit(ivec2 idxs){
-            vec4 board_sample = texture(u_board, tex_coords);
+        // coordinates of cell on global board, spanning 0, gol_width/height
+        ivec2 get_cell_coords(ivec2 offset){
+            return ivec2(gl_FragCoord.xy) / u_grid_resolution.z + offset;
+        }
+
+        // get the section coordinates of this cell with an integer offset
+        ivec2 get_section_coord(ivec2 offset){
+            ivec2 cell_pos = get_cell_coords(offset);
+            ivec2 cells_per_section = u_grid_resolution.xy / u_sections;
+            return cell_pos / cells_per_section;
+        }
+
+        // get the bit of the cell offset from the current one
+        int extract_bit_from_texture(ivec2 offset){
+            ivec2 idxs = get_section_coord(offset);
+            vec2 one_texel = vec2(1.0) / vec2(textureSize(u_board, 0));
+            vec4 board_sample = texture(u_board, tex_coords + one_texel * vec2(offset));
+
             int red_bits = int(board_sample.r * 255.0);
             int green_bits = int(board_sample.g * 255.0);
             int blue_bits = int(board_sample.b * 255.0);
@@ -332,28 +361,32 @@
             return (bits >> idxs.x) & 1;
         }
 
-        ivec2 get_quadrant_coord(){
-            ivec2 cell_pos = ivec2(gl_FragCoord.xy) / u_grid_resolution.z;
-            ivec2 cells_per_section = u_grid_resolution.xy / u_sections;
-            return cell_pos / cells_per_section;
-        }
-
         void main(){
-            ivec2 quadrant_coord = get_quadrant_coord();
-            int this_quadrant_id = quadrant_coord.y * u_sections.x + quadrant_coord.x;
+
+            ivec2 this_section_coord = get_section_coord(ivec2(0));
+            float dye_strength = 0.25;
+            vec4 dye_color = ((this_section_coord.x + this_section_coord.y) & 1) == 1
+                            ? vec4(1.0, 1.0, 0.0, 1.0)
+                            : vec4(0.0, 1.0, 1.0, 1.0);
+            dye_color *= dye_strength;
 
             vec4 alive_color = vec4(1.0);
             vec4 dead_color = vec4(vec3(0.0), 1.0);
 
-            vec4 dye_color = ((quadrant_coord.x + quadrant_coord.y) & 1) == 1
-                            ? vec4(1.0, 1.0, 0.0, 1.0)
-                            : vec4(0.0, 1.0, 1.0, 1.0);
+            int this_bit = extract_bit_from_texture(ivec2(0));
+            vec4 cell_color = this_bit == 1 ? alive_color : dead_color;
 
-            vec4 cell_color = extract_bit(quadrant_coord) == 1
-                              ? alive_color
-                              : dead_color;
-            
-            fragColor = cell_color + dye_color * 0.25;
+            int sum = 0;
+            for(int i = 0; i < 9; i++){
+                int dx = -1 + i % 3;
+                int dy = -1 + i / 3;
+                ivec2 coord = get_section_coord(ivec2(dx, dy));
+                sum += u_kernel[i] * extract_bit_from_texture(ivec2(dx, dy));
+            }
+
+            fragColor = this_bit * u_kernel[4] == 100 ? cell_color :
+                        ((sum == 3 || sum == 11 || sum == 12) ? alive_color : dead_color);
+            fragColor += dye_color;
         }
     `
 
@@ -363,6 +396,7 @@
     const grid_tex_coords_attribute_location = gl.getAttribLocation(grid_program, "a_tex_coords");
     const grid_resolution_location = gl.getUniformLocation(grid_program, "u_grid_resolution");
     const grid_sections_location = gl.getUniformLocation(grid_program, "u_sections");
+    const grid_kernel_location = gl.getUniformLocation(grid_program, "u_kernel");
 
     gl.uniform3iv(grid_resolution_location, [gol_width, gol_height, pixels_per_square]);
     gl.uniform2iv(grid_sections_location, [x_sections, y_sections]);
@@ -388,9 +422,10 @@
         2, gl.FLOAT, false, 4 * bytes_per_float, 2 * bytes_per_float
     );
 
-    function draw_grid(){
+    function draw_grid(kernel){
         gl.useProgram(grid_program);
         gl.bindVertexArray(grid_vao);
+        gl.uniform1iv(grid_kernel_location, kernel);
         gl.drawElements(gl.TRIANGLES, 6 * num_cells, gl.UNSIGNED_INT, 0);
     }
 
@@ -401,7 +436,7 @@
     gl.disable(gl.DEPTH_TEST);
     function render(){
         gl.clear(gl.COLOR_BUFFER_BIT);
-        draw_grid();
+        draw_grid(gol_kernel);
         draw_lines();
 
         requestAnimationFrame(render);

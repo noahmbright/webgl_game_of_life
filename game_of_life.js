@@ -68,7 +68,7 @@
     /////////////////////////////////
     // Game of Life game state
     /////////////////////////////////
-    const pixels_per_square = 2;
+    const pixels_per_square = 16;
     const gol_width = Math.floor(canvas.width / pixels_per_square);
     const gol_height = Math.floor(canvas.height / pixels_per_square);
     const num_cells = gol_width * gol_height;
@@ -87,6 +87,14 @@
     console.log(`x_cells_per_section: ${x_cells_per_section} y_cells_per_section: ${y_cells_per_section}`);
     console.log(`texture_width: ${texture_width} texture_height: ${texture_height} texture bits: ${texture_width * texture_height * 32}`);
 
+    // the very first 32 bits in the array/texture correspond to
+    // the bottom left corners of each section, the next 32 
+    // correspond to the bottom row second column, so on and so forth
+    // the integer to modify corresponds to the offset within the section
+    // the bit to modify depends on the section
+    let gol_board = new Uint32Array(num_cells/32).fill(0);
+    console.log(`gol_board length: ${gol_board.length} gol_board bits: ${gol_board.length * 32}`)
+
     /////////////////////////////////
     // Textures and framebuffers
     /////////////////////////////////
@@ -104,24 +112,23 @@
     const format = gl.RGBA;
     const type = gl.UNSIGNED_BYTE;
 
-    // the very first 32 bits in the array/texture correspond to
-    // the bottom left corners of each section, the next 32 
-    // correspond to the bottom row second column, so on and so forth
-    let gol_board = new Uint32Array(num_cells/32).fill(0);
-
     // x, y are the coordinates of the cell on the board, independent of sectioning
     function set_cell(x, y){
         // in JS array version of board, need to pack bits
         let offset = 0;
-        const x_section = Math.floor(x/x_sections);
-        const y_section = Math.floor(y/y_sections);
-        const x_offset = x % x_sections;
-        const y_offset = y % y_sections;
+        const x_section = Math.floor(x/x_cells_per_section);
+        const y_section = Math.floor(y/y_cells_per_section);
+        const x_offset = x % x_cells_per_section;
+        const y_offset = y % y_cells_per_section;
+        const gol_board_index = y_offset * x_cells_per_section + x_offset;
+        //console.log(`x ${x} y ${y}`)
+        //console.log(`x_section ${x_section} y_section ${y_section}`)
+        //console.log(`x_offset ${x_offset} y_offset ${y_offset}`)
+        //console.log(`gol_board index: ${gol_board_index}`)
         offset += y_section * 8;
         offset += x_section;
-        x_cells_per_section;
 
-        gol_board[y_offset * x_cells_per_section + x_offset] ^= (1 << offset);
+        gol_board[gol_board_index] |= (1 << offset);
     }
 
     const threshold = 0.5;
@@ -146,8 +153,16 @@
         );
     }
 
-    randomize_board();
+    // alive 3 cells at (x,y) and (x +/- 1, y)
+    function horizontal_triplet(x, y){
+        set_cell(x,y);
+        set_cell(x-1,y);
+        set_cell(x+1,y);
+    }
+
     console.log(gol_board);
+    //randomize_board();
+    horizontal_triplet(3, 10);
     buffer_board_to_texture();
 
     /////////////////////////////////
@@ -268,7 +283,7 @@
         }
     }
 
-    console.log(grid_vertices);
+    //console.log(grid_vertices);
 
     let grid_indices = [];
     for(let i = 0; i < num_cells; i++){
@@ -310,8 +325,8 @@
 
             int bits;
             if(idxs.y == 0) bits = red_bits;
-            else if(idxs.y == 0) bits = green_bits;
-            else if(idxs.y == 0) bits = blue_bits;
+            else if(idxs.y == 1) bits = green_bits;
+            else if(idxs.y == 2) bits = blue_bits;
             else bits = alpha_bits;
 
             return (bits >> idxs.x) & 1;
@@ -387,7 +402,7 @@
     function render(){
         gl.clear(gl.COLOR_BUFFER_BIT);
         draw_grid();
-        //draw_lines();
+        draw_lines();
 
         requestAnimationFrame(render);
     }
